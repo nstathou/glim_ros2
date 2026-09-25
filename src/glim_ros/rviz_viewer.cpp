@@ -15,6 +15,23 @@
 
 namespace glim {
 
+namespace {
+geometry_msgs::msg::PoseStamped to_pose_stamped(const std::string& frame_id, double stamp, const Eigen::Isometry3d& T) {
+  const Eigen::Quaterniond quat(T.linear());
+  geometry_msgs::msg::PoseStamped pose;
+  pose.header.stamp = from_sec(stamp);
+  pose.header.frame_id = frame_id;
+  pose.pose.position.x = T.translation().x();
+  pose.pose.position.y = T.translation().y();
+  pose.pose.position.z = T.translation().z();
+  pose.pose.orientation.x = quat.x();
+  pose.pose.orientation.y = quat.y();
+  pose.pose.orientation.z = quat.z();
+  pose.pose.orientation.w = quat.w();
+  return pose;
+}
+}  // namespace
+
 RvizViewer::RvizViewer() : logger(create_module_logger("rviz")) {
   const Config config(GlobalConfig::get_config_path("config_ros"));
 
@@ -99,6 +116,10 @@ std::vector<GenericTopicSubscription::Ptr> RvizViewer::create_subscriptions(rclc
   lidar_pose_corrected_pub = node.create_publisher<geometry_msgs::msg::PoseStamped>("~/lidar_pose_corrected", 10);
   lidar_pose_scanend_corrected_pub = node.create_publisher<geometry_msgs::msg::PoseStamped>("~/lidar_pose_scanend_corrected", 10);
 
+  odom_path_pub = node.create_publisher<nav_msgs::msg::Path>("~/odom_path", 1);
+  submap_path_pub = node.create_publisher<nav_msgs::msg::Path>("~/submap_path", 1);
+  global_path_pub = node.create_publisher<nav_msgs::msg::Path>("~/global_path", 1);
+
   return {};
 }
 
@@ -106,6 +127,7 @@ void RvizViewer::set_callbacks() {
   using std::placeholders::_1;
   OdometryEstimationCallbacks::on_new_frame.add([this](const EstimationFrame::ConstPtr& new_frame) { odometry_new_frame(new_frame, false); });
   OdometryEstimationCallbacks::on_update_new_frame.add([this](const EstimationFrame::ConstPtr& new_frame) { odometry_new_frame(new_frame, true); });
+  SubMappingCallbacks::on_new_submap.add(std::bind(&RvizViewer::submap_on_new_submap, this, _1));
   GlobalMappingCallbacks::on_update_submaps.add(std::bind(&RvizViewer::globalmap_on_update_submaps, this, _1));
 }
 
@@ -177,6 +199,16 @@ void RvizViewer::odometry_new_frame(const EstimationFrame::ConstPtr& new_frame, 
 
     T_world_imu = trajectory->odom2world(T_odom_imu);
     quat_world_imu = Eigen::Quaterniond(T_world_imu.linear());
+  }
+
+  // Front-end trajectory (IMU poses as estimated by odometry, no loop closure)
+  if (!corrected) {
+    odom_path.header.frame_id = map_frame_id;
+    odom_path.header.stamp = from_sec(new_frame->stamp);
+    odom_path.poses.push_back(to_pose_stamped(map_frame_id, new_frame->stamp, T_odom_imu));
+    if (odom_path_pub && odom_path_pub->get_subscription_count()) {
+      odom_path_pub->publish(odom_path);
+    }
   }
 
   // Publish transforms
@@ -470,8 +502,35 @@ void RvizViewer::odometry_new_frame(const EstimationFrame::ConstPtr& new_frame, 
   }
 }
 
+void RvizViewer::submap_on_new_submap(const SubMap::ConstPtr& submap) {
+  // Sub mapping trajectory (frame poses refined by submap-local optimization, no loop closure)
+  submap_path.header.frame_id = map_frame_id;
+  submap_path.header.stamp = from_sec(submap->frames.back()->stamp);
+  for (const auto& frame : submap->frames) {
+    submap_path.poses.push_back(to_pose_stamped(map_frame_id, frame->stamp, frame->T_world_imu));
+  }
+  if (submap_path_pub && submap_path_pub->get_subscription_count()) {
+    submap_path_pub->publish(submap_path);
+  }
+}
+
 void RvizViewer::globalmap_on_update_submaps(const std::vector<SubMap::Ptr>& submaps) {
   const SubMap::ConstPtr latest_submap = submaps.back();
+
+  if (global_path_pub && global_path_pub->get_subscription_count()) {
+    // Global mapping trajectory (same as traj_imu.txt in the dump), rebuilt since past submap poses change
+    nav_msgs::msg::Path global_path;
+    global_path.header.frame_id = map_frame_id;
+    global_path.header.stamp = from_sec(latest_submap->frames.back()->stamp);
+    for (const auto& submap : submaps) {
+      const Eigen::Isometry3d T_world_endpoint_L = submap->T_world_origin * submap->T_origin_endpoint_L;
+      const Eigen::Isometry3d T_odom_imu0 = submap->frames.front()->T_world_imu;
+      for (const auto& frame : submap->frames) {
+        global_path.poses.push_back(to_pose_stamped(map_frame_id, frame->stamp, T_world_endpoint_L * T_odom_imu0.inverse() * frame->T_world_imu));
+      }
+    }
+    global_path_pub->publish(global_path);
+  }
 
   const double stamp_endpoint_R = latest_submap->odom_frames.back()->stamp;
   const Eigen::Isometry3d T_world_endpoint_R = latest_submap->T_world_origin * latest_submap->T_origin_endpoint_R;

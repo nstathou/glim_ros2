@@ -12,6 +12,7 @@
 
 #include <nav_msgs/msg/odometry.hpp>
 #include <geometry_msgs/msg/pose_stamped.hpp>
+#include <nav_msgs/msg/path.hpp>
 #include <sensor_msgs/msg/point_cloud2.hpp>
 
 #include <glim/odometry/estimation_frame.hpp>
@@ -40,6 +41,7 @@ public:
 private:
   void set_callbacks();
   void odometry_new_frame(const EstimationFrame::ConstPtr& new_frame, bool corrected);
+  void submap_on_new_submap(const SubMap::ConstPtr& submap);
   void globalmap_on_update_submaps(const std::vector<SubMap::Ptr>& submaps);
   void invoke(const std::function<void()>& task);
 
@@ -88,6 +90,14 @@ private:
   std::shared_ptr<rclcpp::Publisher<geometry_msgs::msg::PoseStamped>> lidar_pose_scanend_pub;
   std::shared_ptr<rclcpp::Publisher<geometry_msgs::msg::PoseStamped>> lidar_pose_corrected_pub;
   std::shared_ptr<rclcpp::Publisher<geometry_msgs::msg::PoseStamped>> lidar_pose_scanend_corrected_pub;
+
+  // Trajectories of each stage (all drawn in map_frame_id, uncorrected, to compare drift directly)
+  // Each path is only touched by its own module thread
+  std::shared_ptr<rclcpp::Publisher<nav_msgs::msg::Path>> odom_path_pub;    // Odometry (front-end)
+  std::shared_ptr<rclcpp::Publisher<nav_msgs::msg::Path>> submap_path_pub;  // Sub mapping
+  std::shared_ptr<rclcpp::Publisher<nav_msgs::msg::Path>> global_path_pub;  // Global mapping
+  nav_msgs::msg::Path odom_path;
+  nav_msgs::msg::Path submap_path;
 
   std::mutex trajectory_mutex;
   std::unique_ptr<TrajectoryManager> trajectory;
