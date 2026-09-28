@@ -509,7 +509,7 @@ void RvizViewer::submap_on_new_submap(const SubMap::ConstPtr& submap) {
   for (const auto& frame : submap->frames) {
     submap_path.poses.push_back(to_pose_stamped(map_frame_id, frame->stamp, frame->T_world_imu));
   }
-  if (submap_path_pub && submap_path_pub->get_subscription_count()) {
+  if (rclcpp::ok() && submap_path_pub && submap_path_pub->get_subscription_count()) {
     submap_path_pub->publish(submap_path);
   }
 }
@@ -517,7 +517,7 @@ void RvizViewer::submap_on_new_submap(const SubMap::ConstPtr& submap) {
 void RvizViewer::globalmap_on_update_submaps(const std::vector<SubMap::Ptr>& submaps) {
   const SubMap::ConstPtr latest_submap = submaps.back();
 
-  if (global_path_pub && global_path_pub->get_subscription_count()) {
+  if (rclcpp::ok() && global_path_pub && global_path_pub->get_subscription_count()) {
     // Global mapping trajectory (same as traj_imu.txt in the dump), rebuilt since past submap poses change
     nav_msgs::msg::Path global_path;
     global_path.header.frame_id = map_frame_id;
@@ -548,7 +548,7 @@ void RvizViewer::globalmap_on_update_submaps(const std::vector<SubMap::Ptr>& sub
   invoke([this, latest_submap, submap_poses] {
     this->submaps.push_back(latest_submap->frame);
 
-    if (!map_pub->get_subscription_count()) {
+    if (!rclcpp::ok() || !map_pub->get_subscription_count()) {
       return;
     }
 
